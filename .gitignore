@@ -4,3 +4,6 @@ __pycache__/
 data/
 .env
 dist/
+
+test_images/
+reports/
