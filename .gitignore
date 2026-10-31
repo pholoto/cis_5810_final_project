@@ -17,3 +17,6 @@ reports/
 *.log
 .env.*
 .pytest_cache/
+
+# Local backup files
+*.bak

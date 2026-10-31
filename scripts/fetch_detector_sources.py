@@ -18,6 +18,7 @@ REPOS = {
     "dda": ("roy-ch/Dual-Data-Alignment", "8b9c06e75e63f4688bc25ac43a7e3412878cf67f"),
     "aide": ("shilinyan99/AIDE", "6725b710d5c437ab2f59792908ce0377dfc907de"),
     "dinov2": ("facebookresearch/dinov2", "7764ea0f912e53c92e82eb78a2a1631e92725fc8"),
+    "npr": ("chuangchuangtan/NPR-DeepfakeDetection", "781ced3f7ca2cdc69ec9dd4ef27e8d0b3c07752a"),
 }
 
 
@@ -37,10 +38,16 @@ def fetch(item):
                 file.startswith(("dinov2/layers/", "dinov2/models/", "dinov2/hub/"))
                 and file.endswith(".py")
             )
+
         else:
-            keep = file == "LICENSE" or file.endswith(
-                (".py", ".sh", ".json", ".yaml", ".yml", ".txt", ".md")
+            keep = (
+                (name == "npr" and file == "NPR.pth")
+                or file == "LICENSE"
+                or file.endswith(
+                    (".py", ".sh", ".json", ".yaml", ".yml", ".txt", ".md")
+                )
             )
+
         if not keep:
             continue
         path = base / file

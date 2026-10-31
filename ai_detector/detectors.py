@@ -37,6 +37,51 @@ def build_detector(name, device="cpu"):
         [0.48145466, 0.4578275, 0.40821073], [0.26862954, 0.26130258, 0.27577711]
     )
     weights = CACHE / "detectors"
+
+    if name in ("npr", "npr_no_crop"):
+        npr_directory = UP / "npr"
+        sys.path.insert(0, str(npr_directory))
+
+        from networks.resnet import resnet50
+
+        model = resnet50(num_classes=1)
+
+        checkpoint = torch.load(
+            npr_directory / "NPR.pth",
+            map_location="cpu",
+            weights_only=True,
+        )
+
+        state_dict = {
+            key.removeprefix("module."): value
+            for key, value in checkpoint["model"].items()
+        }
+
+        model.load_state_dict(state_dict, strict=True)
+        model.eval().to(device)
+
+        transform = T.Compose([
+            T.Resize((256, 256)),
+            *([] if(name == "npr_no_crop") else [T.CenterCrop(224)]),
+            T.ToTensor(),
+            T.Normalize(
+                [0.485, 0.456, 0.406],
+                [0.229, 0.224, 0.225],
+            ),
+        ])
+
+        return (
+            model,
+            transform,
+            {
+                "transform": "resize 256x256, center crop 224, ImageNet normalization",
+                "score": "sigmoid(fake logit)",
+                "binary": True,
+                "device": device,
+                "strict_state_dict": True,
+                "precision": "float32",
+            },
+        )
     if name == "community_forensics":
         import timm
         from safetensors.torch import load_file

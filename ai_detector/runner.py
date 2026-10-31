@@ -137,7 +137,7 @@ def main():
     )
     p.add_argument("--manifest", type=Path)
     p.add_argument("--output", type=Path, default=ROOT / "reports/predictions")
-    p.add_argument("--model", choices=MODELS)
+    p.add_argument("--model", choices=[*MODELS, "npr", "npr_no_crop"])
     p.add_argument(
         "--device",
         choices=["cpu", "cuda:0"],
