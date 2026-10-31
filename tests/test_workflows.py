@@ -126,21 +126,25 @@ class WorkflowTests(unittest.TestCase):
     def test_python_wildfc_modes_default_to_gpu(self):
         from scripts.run_wildfc import main
 
-        for mode in ("all", "model", "voting", "ensemble"):
-            args = ["run_wildfc.py", "--mode", mode]
-            if mode == "model":
-                args += ["--model", "dda"]
-            with patch("sys.argv", args), patch(
-                "scripts.run_wildfc.subprocess.run"
+        for mode, folder in [('voting', 'pretrained_voting'),
+                             ('pretrained', 'pretrained_meta'),
+                             ('finetuned', 'finetuned_meta')]:
+            with patch('sys.argv', ['run_wildfc.py', '--mode', mode]), patch(
+                'scripts.run_wildfc.subprocess.run'
             ) as execute, contextlib.redirect_stdout(io.StringIO()):
                 main()
-            self.assertEqual(execute.call_count, 3)
+            self.assertEqual(execute.call_count, 2 if mode == 'finetuned' else 3)
             inference = execute.call_args_list[1].args[0]
-            self.assertEqual(inference[inference.index("--device") + 1], "cuda:0")
-            self.assertEqual(inference[inference.index("--gpu-index") + 1], "0")
-            self.assertEqual("--model" in inference, mode == "model")
-            evaluation = execute.call_args_list[2].args[0]
-            self.assertEqual(evaluation[evaluation.index("--mode") + 1], mode)
+            self.assertEqual(inference[inference.index('--gpu-index') + 1], '0')
+            evaluation = execute.call_args_list[-1].args[0]
+            self.assertTrue(evaluation[evaluation.index('--output') + 1].endswith('/reports/' + folder))
+            if mode != 'finetuned':
+                self.assertEqual(inference[inference.index('--device') + 1], 'cuda:0')
+                self.assertTrue(inference[inference.index('--output') + 1].endswith('/.cache/predictions/pretrained'))
+            if mode == 'pretrained':
+                self.assertIn('ai_detector.classical_ensemble', evaluation)
+            elif mode == 'voting':
+                self.assertEqual(evaluation[evaluation.index('--mode') + 1], 'voting')
 
     def test_archive_rejects_traversal_and_links(self):
         for name, link in [("../escape", False), ("link", True)]:

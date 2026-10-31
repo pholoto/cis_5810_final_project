@@ -11,6 +11,10 @@ PyWavelets==1.10.0
 open_clip_torch==3.3.0
 beautifulsoup4>=4.12,<5
 scikit-learn>=1.7,<2
+xgboost>=3,<4
 numpy>=1.26,<3
 # pytorch_wavelets imports pkg_resources, removed in newer setuptools.
 setuptools>=70,<81
+pytorch-metric-learning==2.9.0
+opencv-python-headless>=4.10,<5
+scikit-image>=0.25,<1

@@ -1,76 +1,41 @@
-"""Prepare WildFC, compute detector scores, and evaluate the requested method."""
-
+"""Run pretrained voting, pretrained stacking, or fine-tuning plus stacking."""
 import argparse
 from pathlib import Path
 import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-from ai_detector.config import MODELS
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--mode", choices=["all", "model", "voting", "ensemble"], default="all"
-    )
-    parser.add_argument("--model", choices=MODELS, help="Required with --mode model")
-    parser.add_argument("--gpu-index", type=int, default=0)
-    parser.add_argument("--device", choices=["cuda:0", "cpu"], default="cuda:0")
+    parser.add_argument('--mode', choices=['voting', 'pretrained', 'finetuned'], default='pretrained')
+    parser.add_argument('--gpu-index', type=int, default=0)
     args = parser.parse_args()
-    if args.mode == "model" and not args.model:
-        parser.error("--mode model requires --model NAME")
-    if args.model and args.mode != "model":
-        parser.error("--model is only used with --mode model")
     if args.gpu_index < 0:
-        parser.error("--gpu-index must be nonnegative")
+        parser.error('--gpu-index must be nonnegative')
 
     def execute(*command):
         subprocess.run([sys.executable, *map(str, command)], cwd=ROOT, check=True)
 
-    execute("scripts/prepare_wildfc.py")
-    manifest = ROOT / "data/wildfc/ensemble_split/all.jsonl"
-    predictions = ROOT / "reports/wildfc_ensemble/base_predictions"
-    command = [
-        "-m",
-        "ai_detector",
-        "--manifest",
-        manifest,
-        "--output",
-        predictions,
-        "--device",
-        args.device,
-        "--gpu-index",
-        args.gpu_index,
-        "--scores-only",
-    ]
-    if args.mode == "model":
-        command.extend(["--model", args.model])
-    execute(*command)
-    folder = {
-        "all": "wildfc_ensemble",
-        "voting": "wildfc_voting",
-        "ensemble": "wildfc_meta",
-        "model": f"wildfc_{args.model}",
-    }[args.mode]
-    command = [
-        "-m",
-        "ai_detector.ensemble",
-        "--manifest",
-        manifest,
-        "--predictions",
-        predictions,
-        "--output",
-        ROOT / "reports" / folder,
-        "--mode",
-        args.mode,
-    ]
-    if args.model:
-        command.extend(["--model", args.model])
-    execute(*command)
-    print(f'Results: {ROOT / "reports" / folder / "summary.png"}')
+    execute('scripts/prepare_wildfc.py')
+    folder = {'voting': 'pretrained_voting', 'pretrained': 'pretrained_meta',
+              'finetuned': 'finetuned_meta'}[args.mode]
+    output = ROOT / 'reports' / folder
+    if args.mode == 'finetuned':
+        execute('-m', 'ai_detector.finetune', '--gpu-index', args.gpu_index, '--output', output)
+    else:
+        manifest = ROOT / 'data/wildfc/ensemble_split/all.jsonl'
+        predictions = ROOT / '.cache/predictions/pretrained'
+        execute('-m', 'ai_detector', '--manifest', manifest, '--output', predictions,
+                '--device', 'cuda:0', '--gpu-index', args.gpu_index, '--scores-only')
+        module = 'ai_detector.ensemble' if args.mode == 'voting' else 'ai_detector.classical_ensemble'
+        command = ['-m', module, '--manifest', manifest, '--predictions', predictions, '--output', output]
+        if args.mode == 'voting':
+            command += ['--mode', 'voting']
+        execute(*command)
+    print(f'Results: {output / "summary.png"}')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

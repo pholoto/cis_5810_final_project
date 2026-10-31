@@ -26,7 +26,7 @@ def package(name, path):
     sys.modules[name] = pkg
 
 
-def make_detector(name, device="cpu"):
+def build_detector(name, device="cpu"):
     import torch
     from torchvision import transforms as T
     from PIL import Image
@@ -38,14 +38,46 @@ def make_detector(name, device="cpu"):
     )
     weights = CACHE / "detectors"
     if name == "community_forensics":
-        from ai_detector.community import CommunityForensics
+        import timm
+        from safetensors.torch import load_file
+        from huggingface_hub import hf_hub_download
+        from .config import COMMUNITY_REPO, COMMUNITY_REVISION
 
-        model = CommunityForensics(device=device, cache_dir=str(CACHE / "huggingface"))
-        return lambda p: model(p), {
-            "transform": "resize short edge 440, center crop 384, ImageNet normalization",
-            "score": "sigmoid(fake logit)",
-            "device": device,
-        }
+        path = hf_hub_download(
+            COMMUNITY_REPO,
+            "model.safetensors",
+            revision=COMMUNITY_REVISION,
+            cache_dir=str(CACHE / "huggingface"),
+            local_files_only=True,
+        )
+        model = timm.create_model(
+            "vit_small_patch16_384.augreg_in21k_ft_in1k",
+            pretrained=False,
+            num_classes=1,
+        )
+        model.load_state_dict(
+            {k.removeprefix("vit."): v for k, v in load_file(path).items()}, strict=True
+        )
+        model.eval().to(device)
+        transform = T.Compose(
+            [
+                T.Resize(440),
+                T.CenterCrop(384),
+                T.ToTensor(),
+                T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+            ]
+        )
+        return (
+            model,
+            transform,
+            {
+                "transform": "resize short edge 440, center crop 384, ImageNet normalization",
+                "score": "sigmoid(fake logit)",
+                "binary": True,
+                "device": device,
+                "strict_state_dict": True,
+            },
+        )
     if name == "safe":
         mod = module("safe_resnet", UP / "safe/models/resnet.py")
         model = mod.resnet50(pretrained=False)
@@ -144,20 +176,38 @@ def make_detector(name, device="cpu"):
     model.eval().to(device)
     binary = name in ("universalfakedetect", "dda")
 
+    return (
+        model,
+        transform,
+        {
+            "transform": definition,
+            "binary": binary,
+            "score": "sigmoid(fake logit)" if binary else "softmax(class 1 = fake)",
+            "strict_state_dict": True,
+            "device": device,
+            "precision": "float32",
+        },
+    )
+
+
+def make_detector(name, device="cpu"):
+    import torch
+    from PIL import Image, ImageOps
+
+    model, transform, metadata = build_detector(name, device)
+
     def predict(path):
         with Image.open(path) as image:
+            if name == "community_forensics":
+                image = ImageOps.exif_transpose(image)
             tensor = transform(image.convert("RGB")).unsqueeze(0).to(device)
         with torch.inference_mode():
             logits = model(tensor)
             score = (
-                logits.sigmoid().item() if binary else logits.softmax(-1)[0, 1].item()
+                logits.sigmoid().item()
+                if metadata["binary"]
+                else logits.softmax(-1)[0, 1].item()
             )
         return float(score)
 
-    return predict, {
-        "transform": definition,
-        "score": "sigmoid(fake logit)" if binary else "softmax(class 1 = fake)",
-        "strict_state_dict": True,
-        "device": device,
-        "precision": "float32",
-    }
+    return predict, metadata

@@ -166,6 +166,11 @@ def render_summary(results, path, train_count, test_count):
         "family_vote_5": "Family vote (5)",
         "mean_score_7": "Mean score (7)",
         "meta_mlp": "Meta-classifier MLP",
+        "logistic_l2": "Logistic regression (L2)",
+        "svm_linear": "SVM (linear)",
+        "svm_rbf": "SVM (RBF)",
+        "random_forest": "Random Forest",
+        "xgboost": "XGBoost",
     }
     width = 1600
     im = Image.new("RGB", (width, 265 + 55 * len(results)), "#f3f6fa")
@@ -174,7 +179,7 @@ def render_summary(results, path, train_count, test_count):
     text(
         d,
         (35, 72),
-        f"Train {train_count:,} / evaluation {test_count:,} · source-stratified 80:20 · fixed threshold 0.5",
+        f"Train {train_count:,} / evaluation {test_count:,} · disjoint training/evaluation groups · fixed threshold 0.5",
         21,
         fill="#52667a",
     )
@@ -217,7 +222,7 @@ def render_summary(results, path, train_count, test_count):
     text(
         d,
         (35, im.height - 78),
-        "Base detectors frozen. Held-out evaluation; any meta-network is trained on training data only.",
+        "Detector weights fixed during stacking. Meta-learners use training data only; evaluation is held out.",
         17,
         fill="#52667a",
     )
@@ -357,9 +362,9 @@ def main():
     p.add_argument(
         "--predictions",
         type=Path,
-        default=ROOT / "reports/wildfc_ensemble/base_predictions",
+        default=ROOT / ".cache/predictions/pretrained",
     )
-    p.add_argument("--output", type=Path, default=ROOT / "reports/wildfc_ensemble")
+    p.add_argument("--output", type=Path, default=ROOT / "reports/pretrained_voting")
     p.add_argument(
         "--mode", choices=["all", "model", "voting", "ensemble"], default="all"
     )

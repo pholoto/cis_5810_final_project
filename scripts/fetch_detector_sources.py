@@ -6,6 +6,10 @@ import requests
 
 ROOT = Path(__file__).resolve().parents[1]
 REPOS = {
+    "community": (
+        "JeongsooP/Community-Forensics",
+        "ee5b71d43db0f3779e1edd64ee927b13f2dd6ad4",
+    ),
     "safe": ("Ouxiang-Li/SAFE", "4e998724651b227def64f5be0cd60c0aa1552c35"),
     "ufd": (
         "WisconsinAIVision/UniversalFakeDetect",

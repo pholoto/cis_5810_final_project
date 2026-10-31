@@ -7,3 +7,13 @@ dist/
 
 test_images/
 reports/
+
+# Generated checkpoints, credentials, and local runtime files
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.joblib
+*.log
+.env.*
+.pytest_cache/

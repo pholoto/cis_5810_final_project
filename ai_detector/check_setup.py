@@ -13,6 +13,9 @@ def main():
         failures.append("Python 3.12 or 3.13")
     for name in (
         "pkg_resources",
+        "cv2",
+        "skimage",
+        "pytorch_metric_learning",
         "torch",
         "torchvision",
         "timm",
@@ -21,6 +24,7 @@ def main():
         "PIL",
         "numpy",
         "sklearn",
+        "xgboost",
         "kornia",
         "pytorch_wavelets",
         "pywt",
@@ -35,6 +39,7 @@ def main():
             failures.append(name)
             print(f"MISSING/BROKEN dependency: {name}: {exc}")
     required = [
+        UP / "community/custom_transforms.py",
         UP / "safe/models/resnet.py",
         UP / "ufd/models/clip/model.py",
         UP / "dda/Inference/models/lora.py",
