@@ -9,7 +9,7 @@ import subprocess
 import sys
 import time
 
-from .config import ROOT, CACHE, MODELS, UP, configure_environment
+from .config import ROOT, CACHE, MODELS, EXTENDED_MODELS, UP, configure_environment
 from .detectors import make_detector
 from .manifests import manifest_digest, matching_result, snapshot_manifest
 
@@ -124,7 +124,8 @@ def worker(args):
 def report(args):
     from ai_detector.reporting import render_report
 
-    render_report(args.manifest, args.output, MODELS)
+    model_names = EXTENDED_MODELS if args.include_npr else MODELS
+    render_report(args.manifest, args.output, model_names)
 
 
 def main():
@@ -143,6 +144,11 @@ def main():
         choices=["cpu", "cuda:0"],
         default=None,
         help="GPU by default; cuda:0 uses the physical GPU selected by --gpu-index",
+    )
+    p.add_argument(
+        "--include-npr",
+        action="store_true",
+        help="Run all eight detectors, including NPR",
     )
     p.add_argument(
         "--gpu-index",
@@ -272,7 +278,7 @@ def main():
         (args.output / "run_status.json").write_text(
             json.dumps(status, indent=2) + "\n"
         )
-        for name in MODELS:
+        for name in (EXTENDED_MODELS if args.include_npr else MODELS):
             result = args.output / f"{name}.json"
             if matching_result(result, args.manifest):
                 print(f"{name}: reusing matching predictions", flush=True)

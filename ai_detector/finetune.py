@@ -13,7 +13,7 @@ import subprocess
 import sys
 import time
 
-from .config import ROOT, CACHE, UP, MODELS, configure_environment
+from .config import ROOT, CACHE, UP, MODELS, EXTENDED_MODELS, configure_environment
 from .manifests import manifest_digest
 
 DEFAULT_OUTPUT = ROOT / "reports/finetuned_meta"
@@ -153,6 +153,12 @@ def prepare_split(original, output):
 
 def base_signature(name):
     from .config import COMMUNITY_REPO, COMMUNITY_REVISION
+
+    if name == "npr":
+        path = UP / "npr" / "NPR.pth"
+        with path.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        return {"npr/NPR.pth": digest}
 
     if name == "community_forensics":
         from huggingface_hub import hf_hub_download
@@ -682,7 +688,12 @@ def main():
     p.add_argument(
         "--phase", choices=["run", "prepare", "train", "predict"], default="run"
     )
-    p.add_argument("--model", choices=MODELS)
+    p.add_argument("--model", choices=[*MODELS, "npr"])
+    p.add_argument(
+    "--include-npr",
+    action="store_true",
+    help="Include NPR in full fine-tuning and stacking runs",
+    )
     p.add_argument(
         "--epochs",
         type=int,
@@ -746,7 +757,7 @@ def main():
 
     with (args.output / "run.lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        selected = [args.model] if args.model else MODELS
+        selected = ([args.model] if args.model else (EXTENDED_MODELS if args.include_npr else MODELS))
         status = {
             "status": "running",
             "models": selected,
@@ -807,7 +818,7 @@ def main():
                         str(args.output / "base_predictions"),
                         "--output",
                         str(args.output),
-                    ],
+                    ] + (["--include-npr"] if args.include_npr else []),
                     cwd=ROOT,
                     check=True,
                 )

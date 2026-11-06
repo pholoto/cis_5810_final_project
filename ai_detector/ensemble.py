@@ -16,7 +16,7 @@ from sklearn.metrics import (
     roc_auc_score,
     average_precision_score,
 )
-from .config import MODELS, ROOT
+from .config import MODELS, EXTENDED_MODELS, ROOT
 from .manifests import manifest_digest
 from .reporting import font, text, save_png, NAMES
 from PIL import Image, ImageDraw
@@ -101,15 +101,23 @@ def predict_meta(model, mean, scale, scores):
 
 
 def votes(scores):
+    scores = np.asarray(scores)
+    if scores.ndim != 2 or scores.shape[1] not in (7, 8):
+        raise ValueError("Voting requires seven or eight detector scores")
+
+    count = scores.shape[1]
     hard = (scores > 0.5).astype(np.int32)
-    # Three correlated AIDE variants otherwise count as three of seven votes.
+
+    # Keep the three correlated AIDE variants as one family vote.
+    aide_vote = (hard[:, 4:7].sum(axis=1) >= 2).astype(np.int32)
     family_hard = np.column_stack(
-        [hard[:, :4], (hard[:, 4:].sum(axis=1) >= 2).astype(np.int32)]
+        [hard[:, :4], aide_vote, hard[:, 7:]]
     )
+
     return {
-        "majority_vote_7": hard.mean(axis=1),
-        "family_vote_5": family_hard.mean(axis=1),
-        "mean_score_7": scores.mean(axis=1),
+        f"majority_vote_{count}": hard.mean(axis=1),
+        f"family_vote_{family_hard.shape[1]}": family_hard.mean(axis=1),
+        f"mean_score_{count}": scores.mean(axis=1),
     }
 
 
@@ -165,6 +173,9 @@ def render_summary(results, path, train_count, test_count):
         "majority_vote_7": "Majority vote (7)",
         "family_vote_5": "Family vote (5)",
         "mean_score_7": "Mean score (7)",
+        "majority_vote_8": "Majority vote (8)",
+        "family_vote_6": "Family vote (6)",
+        "mean_score_8": "Mean score (8)",
         "meta_mlp": "Meta-classifier MLP",
         "logistic_l2": "Logistic regression (L2)",
         "svm_linear": "SVM (linear)",
@@ -243,23 +254,34 @@ def render_summary(results, path, train_count, test_count):
     save_png(im, path)
 
 
-def run(manifest, prediction_dir, output, mode="all", model=None):
+def run(manifest, prediction_dir, output, mode="all", model=None, include_npr=False):
     if mode not in ("all", "voting", "ensemble", "model"):
         raise ValueError(f"Unknown mode: {mode}")
-    if mode == "model" and model not in MODELS:
+    selected_models = EXTENDED_MODELS if include_npr else MODELS
+
+    if mode == "model" and model not in EXTENDED_MODELS:
         raise ValueError("Single-model evaluation requires a valid model name")
-    models = [model] if mode == "model" else MODELS
+
+    models = [model] if mode == "model" else selected_models
+    vote_methods = [
+        f"majority_vote_{len(selected_models)}",
+        f"family_vote_{len(selected_models) - 2}",
+        f"mean_score_{len(selected_models)}",
+    ]
     train_meta = mode in ("all", "ensemble")
     output.mkdir(parents=True, exist_ok=True)
     config = dict(DEFAULT_CONFIG)
     config["model_order"] = models
     config["input_manifest_sha256"] = manifest_digest(manifest)
-    config["comparison_methods"] = [
-        "majority_vote_7",
-        "family_vote_5",
-        "mean_score_7",
-        "meta_mlp",
-    ]
+    config["comparison_methods"] = vote_methods + ["meta_mlp"]
+
+    if mode != "all":
+        config["comparison_methods"] = {
+            "voting": vote_methods,
+            "ensemble": ["meta_mlp"],
+            "model": [],
+        }[mode]
+        config["mode"] = mode
     if mode != "all":
         config["comparison_methods"] = {
             "voting": ["majority_vote_7", "family_vote_5", "mean_score_7"],
@@ -288,7 +310,7 @@ def run(manifest, prediction_dir, output, mode="all", model=None):
             "state_dict": model.state_dict(),
             "mean": torch.from_numpy(mean),
             "scale": torch.from_numpy(scale),
-            "model_order": MODELS,
+            "model_order": models,
             "config": config,
         }
         torch.save(checkpoint, output / "meta_classifier.pt")
@@ -368,9 +390,21 @@ def main():
     p.add_argument(
         "--mode", choices=["all", "model", "voting", "ensemble"], default="all"
     )
-    p.add_argument("--model", choices=MODELS)
+    p.add_argument(
+        "--include-npr",
+        action="store_true",
+        help="Include NPR as an eighth detector",
+    )
+    p.add_argument("--model", choices=EXTENDED_MODELS)
     a = p.parse_args()
-    run(a.manifest, a.predictions, a.output, a.mode, a.model)
+    run(
+        a.manifest,
+        a.predictions,
+        a.output,
+        a.mode,
+        a.model,
+        include_npr=a.include_npr,
+    )
 
 
 if __name__ == "__main__":

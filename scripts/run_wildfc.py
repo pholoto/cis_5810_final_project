@@ -11,6 +11,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mode', choices=['voting', 'pretrained', 'finetuned'], default='pretrained')
     parser.add_argument('--gpu-index', type=int, default=0)
+    parser.add_argument('--include-npr', action='store_true', help='Include NPR as an eighth detector')
     args = parser.parse_args()
     if args.gpu_index < 0:
         parser.error('--gpu-index must be nonnegative')
@@ -21,18 +22,36 @@ def main():
     execute('scripts/prepare_wildfc.py')
     folder = {'voting': 'pretrained_voting', 'pretrained': 'pretrained_meta',
               'finetuned': 'finetuned_meta'}[args.mode]
+    if args.include_npr:
+        folder += '_with_npr'
     output = ROOT / 'reports' / folder
     if args.mode == 'finetuned':
-        execute('-m', 'ai_detector.finetune', '--gpu-index', args.gpu_index, '--output', output)
+        command = ['-m', 'ai_detector.finetune', '--gpu-index', args.gpu_index, '--output', output]
+        if args.include_npr:
+            command.append('--include-npr')
+        execute(*command)
     else:
         manifest = ROOT / 'data/wildfc/ensemble_split/all.jsonl'
-        predictions = ROOT / '.cache/predictions/pretrained'
-        execute('-m', 'ai_detector', '--manifest', manifest, '--output', predictions,
-                '--device', 'cuda:0', '--gpu-index', args.gpu_index, '--scores-only')
+        predictions = ROOT / '.cache/predictions' / (
+            'pretrained_with_npr' if args.include_npr else 'pretrained'
+        )
+        inference_command = [
+            '-m', 'ai_detector',
+            '--manifest', manifest,
+            '--output', predictions,
+            '--device', 'cuda:0',
+            '--gpu-index', args.gpu_index,
+            '--scores-only',
+        ]
+        if args.include_npr:
+            inference_command.append('--include-npr')
+        execute(*inference_command)
         module = 'ai_detector.ensemble' if args.mode == 'voting' else 'ai_detector.classical_ensemble'
         command = ['-m', module, '--manifest', manifest, '--predictions', predictions, '--output', output]
         if args.mode == 'voting':
             command += ['--mode', 'voting']
+        if args.include_npr:
+            command.append('--include-npr')
         execute(*command)
     print(f'Results: {output / "summary.png"}')
 

@@ -16,6 +16,7 @@ NAMES = {
     "aide_GenImage": "AIDE GenImage",
     "aide_progan": "AIDE ProGAN",
     "aide_sd14": "AIDE SD1.4",
+    "npr": "NPR",
 }
 INK = "#172b43"
 MUTED = "#52667a"
@@ -152,7 +153,7 @@ def render_report(manifest, output, models):
     pages = []
     for start in range(0, len(records), page_size):
         subset = records[start : start + page_size]
-        width = 1920
+        width = max(1920, 469 + 202 * len(models) + 30)
         height = 215 + 94 * len(subset)
         im = Image.new("RGB", (width, height), BG)
         d = ImageDraw.Draw(im)

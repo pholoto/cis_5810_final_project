@@ -15,6 +15,7 @@ MODELS = [
     "aide_progan",
     "aide_sd14",
 ]
+EXTENDED_MODELS = [*MODELS, "npr"]
 COMMUNITY_REPO = "OwensLab/commfor-model-384"
 COMMUNITY_REVISION = "6076002bf0d9dd37537f965ee2f06f826c333b61"
 

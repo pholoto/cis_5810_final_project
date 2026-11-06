@@ -60,6 +60,15 @@ def recipe(name, epochs=None):
             smoothing=0.1,
             warmup_fraction=0.0,
         ),
+        "npr": dict(
+            epochs=1,
+            microbatch=8,
+            effective_batch=32,
+            lr=2e-4,
+            weight_decay=0.0,
+            smoothing=0.0,
+            warmup_fraction=0.0,
+        ),
     }[family]
     values = dict(values, family=family)
     if epochs is not None:
@@ -163,6 +172,17 @@ def train_transform(name):
             tensor = data.transform_before(image)
             patches = dct(tensor)
             return torch.stack([data.transform_train(p) for p in (*patches, tensor)])
+    if name == "npr":
+        return T.Compose([
+            T.Resize((256, 256)),
+            T.RandomCrop(224),
+            T.RandomHorizontalFlip(),
+            T.ToTensor(),
+            T.Normalize(
+                [0.485, 0.456, 0.406],
+                [0.229, 0.224, 0.225],
+            ),
+        ])
 
         return transform
     raise ValueError(name)
@@ -202,7 +222,7 @@ def loss_for(model, x, y, name, config):
         )
         return 0.5 * cls + 0.5 * contrast
     logits = model(x)
-    if name in ("community_forensics", "universalfakedetect"):
+    if name in ("community_forensics", "universalfakedetect", "npr"):
         return torch.nn.functional.binary_cross_entropy_with_logits(
             logits.flatten().float(), y.float()
         )

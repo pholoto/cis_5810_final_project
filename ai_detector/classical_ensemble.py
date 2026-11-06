@@ -14,7 +14,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.svm import LinearSVC, SVC
 from sklearn.ensemble import RandomForestClassifier
 from threadpoolctl import threadpool_limits
-from .config import ROOT, MODELS, configure_environment
+from .config import ROOT, MODELS, EXTENDED_MODELS, configure_environment
 from .manifests import manifest_digest
 from .ensemble import (load_features, transform_scores, metrics, votes, fit_meta,
                        predict_meta, DEFAULT_CONFIG, render_summary)
@@ -39,8 +39,9 @@ def classifiers(y):
     }
 
 
-def run(manifest, predictions, output):
-    rows, x = load_features(manifest, predictions)
+def run(manifest, predictions, output, include_npr=False):
+    model_names = EXTENDED_MODELS if include_npr else MODELS
+    rows, x = load_features(manifest, predictions, models=model_names)
     train = np.array([r['split'] == 'train' for r in rows])
     test = np.array([r['split'] == 'test' for r in rows])
     if not (train | test).all() or not train.any() or not test.any():
@@ -54,18 +55,18 @@ def run(manifest, predictions, output):
     models = classifiers(y[train])
     checkpoint_hashes = {
         n: json.loads((predictions / f'{n}.json').read_text()).get('checkpoint_sha256')
-        for n in MODELS
+        for n in model_names
     }
     fine_tuned = any(checkpoint_hashes.values())
     if fine_tuned and (not all(checkpoint_hashes.values()) or any(
         r.get('training_role') != 'stacking' for r in rows if r['split'] == 'train'
     )):
-        raise ValueError('Fine-tuned stacking requires seven checkpoint scores and reserved stacking training rows')
+        raise ValueError('Fine-tuned stacking requires checkpoint scores for every selected detector and reserved stacking training rows')
     protocol = {
-        'manifest_sha256': manifest_digest(manifest), 'model_order': MODELS,
-        'prediction_sha256': {n: manifest_digest(predictions / f'{n}.json') for n in MODELS},
+        'manifest_sha256': manifest_digest(manifest), 'model_order': model_names,
+        'prediction_sha256': {n: manifest_digest(predictions / f'{n}.json') for n in model_names},
         'train_count': int(train.sum()), 'test_count': int(test.sum()),
-        'features': 'Seven frozen detector scores converted to clipped log-odds; linear/SVM scaling fitted on train only',
+        'features': f'{len(model_names)} frozen detector scores converted to clipped log-odds; linear/SVM scaling fitted on train only',
         'selection': 'Fixed settings; no validation, early stopping, test tuning or threshold search',
         'svm_scores': 'Sigmoid of decision margin for storage only, NOT calibrated probabilities; decision threshold is margin > 0',
         'test_note': 'Reused existing benchmark test split, previously inspected',
@@ -76,7 +77,7 @@ def run(manifest, predictions, output):
     }
     if fine_tuned:
         protocol['detector_checkpoint_sha256'] = checkpoint_hashes
-        protocol['features'] = 'Seven fine-tuned detector scores converted to clipped log-odds; linear/SVM scaling fitted on reserved stacking train only'
+        protocol['features'] = f'{len(model_names)} fine-tuned detector scores converted to clipped log-odds; linear/SVM scaling fitted on reserved stacking train only'
     output.mkdir(parents=True, exist_ok=True)
     path = output / 'protocol.json'
     if path.exists() and json.loads(path.read_text()) != protocol:
@@ -85,13 +86,13 @@ def run(manifest, predictions, output):
     status = output / 'status.json'
     status.write_text(json.dumps({'status': 'running'}))
     z = transform_scores(x)
-    scores = {name: x[test, i] for i, name in enumerate(MODELS)}
+    scores = {name: x[test, i] for i, name in enumerate(model_names)}
     scores.update(votes(x[test]))
     results = {}
     for name, model in models.items():
         print('Training', name, flush=True)
         model.fit(z[train], y[train])
-        joblib.dump({'estimator': model, 'model_order': MODELS,
+        joblib.dump({'estimator': model, 'model_order': model_names,
                      'feature_transform': 'ai_detector.ensemble.transform_scores',
                      'protocol': protocol}, output / f'{name}.joblib')
         if name.startswith('svm_'):
@@ -104,7 +105,7 @@ def run(manifest, predictions, output):
     model, mean, scale, history = fit_meta(x[train], y[train], DEFAULT_CONFIG)
     import torch
     torch.save({'state_dict': model.state_dict(), 'mean': torch.from_numpy(mean),
-                'scale': torch.from_numpy(scale), 'model_order': MODELS,
+                'scale': torch.from_numpy(scale), 'model_order': model_names,
                 'config': DEFAULT_CONFIG}, output / 'meta_classifier.pt')
     scores['meta_mlp'] = predict_meta(model, mean, scale, x[test])
     results = {name: metrics(y[test], p) for name, p in scores.items()}
@@ -129,10 +130,11 @@ def main():
     p.add_argument('--manifest', type=Path, default=ROOT / 'data/wildfc/ensemble_split/all.jsonl')
     p.add_argument('--predictions', type=Path, default=ROOT / '.cache/predictions/pretrained')
     p.add_argument('--output', type=Path, default=ROOT / 'reports/pretrained_meta')
+    p.add_argument('--include-npr', action='store_true', help='Include NPR as an eighth detector')
     args = p.parse_args()
     configure_environment(offline=True)
     with threadpool_limits(limits=2):
-        run(args.manifest, args.predictions, args.output)
+        run(args.manifest, args.predictions, args.output, include_npr=args.include_npr,)
 
 
 if __name__ == '__main__':
