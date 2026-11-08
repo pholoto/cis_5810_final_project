@@ -5,12 +5,17 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import time
 
-from .config import ROOT, CACHE, MODELS, EXTENDED_MODELS, UP, configure_environment
+from .config import (
+    ROOT, CACHE, DETECTORS, UP, configure_environment, add_model_selection,
+    parse_model_selection,
+)
 from .detectors import make_detector
+from .artifacts import inference_signature
 from .manifests import manifest_digest, matching_result, snapshot_manifest
 
 
@@ -33,12 +38,16 @@ def worker(args):
         torch.cuda.reset_peak_memory_stats()
     progress = args.output / f"{args.model}.progress.jsonl"
     progress_meta = args.output / f"{args.model}.progress.meta.json"
-    digest = manifest_digest(args.manifest)
+    provenance = {
+        "input_manifest_sha256": manifest_digest(args.manifest),
+        "inference_signature": getattr(args, "inference_signature", None)
+        or inference_signature(args.model, args.device),
+    }
     results = []
     if (
         progress.exists()
         and progress_meta.exists()
-        and json.loads(progress_meta.read_text()).get("input_manifest_sha256") == digest
+        and json.loads(progress_meta.read_text()) == provenance
     ):
         content = progress.read_bytes()
         if content and not content.endswith(b"\n"):
@@ -52,7 +61,7 @@ def worker(args):
         progress.write_bytes(content)
     else:
         progress.write_text("")
-        progress_meta.write_text(json.dumps({"input_manifest_sha256": digest}) + "\n")
+        progress_meta.write_text(json.dumps(provenance) + "\n")
     predict, metadata = make_detector(args.model, args.device)
     start_index = len(results)
     print(f"Resuming {args.model} at {start_index}/{len(records)}", flush=True)
@@ -104,7 +113,7 @@ def worker(args):
         print("GPU_MEMORY", json.dumps(metadata), flush=True)
     output = {
         "model": args.model,
-        "input_manifest_sha256": manifest_digest(args.manifest),
+        **provenance,
         "threshold": 0.5,
         "score_caveat": "Uncalibrated model score, not a probability of authenticity",
         "metadata": metadata,
@@ -116,7 +125,12 @@ def worker(args):
     }
     temporary = args.output / f"{args.model}.json.tmp"
     temporary.write_text(json.dumps(output, indent=2) + "\n")
-    temporary.replace(args.output / f"{args.model}.json")
+    destination = args.output / f"{args.model}.json"
+    if destination.exists():
+        archive = args.output / "previous_predictions" / args.model
+        archive.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(destination, archive / f"{manifest_digest(destination)}.json")
+    temporary.replace(destination)
     progress.unlink(missing_ok=True)
     progress_meta.unlink(missing_ok=True)
 
@@ -124,8 +138,7 @@ def worker(args):
 def report(args):
     from ai_detector.reporting import render_report
 
-    model_names = EXTENDED_MODELS if args.include_npr else MODELS
-    render_report(args.manifest, args.output, model_names)
+    render_report(args.manifest, args.output, args.selected_models)
 
 
 def main():
@@ -138,18 +151,14 @@ def main():
     )
     p.add_argument("--manifest", type=Path)
     p.add_argument("--output", type=Path, default=ROOT / "reports/predictions")
-    p.add_argument("--model", choices=[*MODELS, "npr", "npr_no_crop"])
+    p.add_argument("--model", choices=DETECTORS)
     p.add_argument(
         "--device",
         choices=["cpu", "cuda:0"],
         default=None,
         help="GPU by default; cuda:0 uses the physical GPU selected by --gpu-index",
     )
-    p.add_argument(
-        "--include-npr",
-        action="store_true",
-        help="Run all eight detectors, including NPR",
-    )
+    add_model_selection(p)
     p.add_argument(
         "--gpu-index",
         type=int,
@@ -163,6 +172,9 @@ def main():
         help="Save numeric predictions without rendering image tables",
     )
     args = p.parse_args()
+    if args.model and args.models:
+        p.error("--model and --models cannot be used together")
+    args.selected_models = parse_model_selection(p, args)
     args.output = args.output.resolve()
     args.output.mkdir(parents=True, exist_ok=True)
     if args.inputs and args.manifest:
@@ -238,7 +250,11 @@ def main():
 
         with (runtime / f"{args.model}.lock").open("w") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            if matching_result(args.output / f"{args.model}.json", args.manifest):
+            args.inference_signature = inference_signature(args.model, args.device)
+            if matching_result(
+                args.output / f"{args.model}.json", args.manifest,
+                signature=args.inference_signature,
+            ):
                 return
             if args.device == "cuda:0":
                 with (CACHE / f"detectors/gpu{args.gpu_index}_inference.lock").open(
@@ -278,11 +294,17 @@ def main():
         (args.output / "run_status.json").write_text(
             json.dumps(status, indent=2) + "\n"
         )
-        for name in (EXTENDED_MODELS if args.include_npr else MODELS):
+        for name in args.selected_models:
             result = args.output / f"{name}.json"
-            if matching_result(result, args.manifest):
-                print(f"{name}: reusing matching predictions", flush=True)
-                continue
+            if result.exists():
+                try:
+                    signature = inference_signature(name, args.device)
+                except (OSError, ImportError):
+                    # Let the worker record missing artifacts in its normal error log.
+                    signature = None
+                if signature is not None and matching_result(result, args.manifest, signature=signature):
+                    print(f"{name}: reusing matching predictions", flush=True)
+                    continue
             print(
                 f"{name}: running (missing or stale predictions); log: {runtime/name}.log",
                 flush=True,

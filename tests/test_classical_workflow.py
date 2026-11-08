@@ -73,6 +73,12 @@ class ClassicalWorkflowTests(unittest.TestCase):
 
     def test_finetuned_pipeline_trains_all_stackers_in_same_folder(self):
         from ai_detector import finetune
+        import os
+        import sys
+        from unittest.mock import Mock
+
+        if os.name == "nt":
+            self.enterContext(patch.dict(sys.modules, {"fcntl": Mock(LOCK_EX=2, LOCK_NB=4)}))
         output = self.root / 'finetuned_meta'
         argv = ['finetune', '--output', str(output), '--gpu-index', '0']
         with patch('sys.argv', argv), patch.object(finetune, 'prepare_split',

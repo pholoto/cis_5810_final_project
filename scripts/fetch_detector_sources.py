@@ -1,10 +1,15 @@
 """Fetch pinned official source files; all writes stay under the repository."""
 
+import argparse
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import sys
 import requests
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from ai_detector.config import NPR_REVISION, SPAI_REVISION
+
 REPOS = {
     "community": (
         "JeongsooP/Community-Forensics",
@@ -18,7 +23,8 @@ REPOS = {
     "dda": ("roy-ch/Dual-Data-Alignment", "8b9c06e75e63f4688bc25ac43a7e3412878cf67f"),
     "aide": ("shilinyan99/AIDE", "6725b710d5c437ab2f59792908ce0377dfc907de"),
     "dinov2": ("facebookresearch/dinov2", "7764ea0f912e53c92e82eb78a2a1631e92725fc8"),
-    "npr": ("chuangchuangtan/NPR-DeepfakeDetection", "781ced3f7ca2cdc69ec9dd4ef27e8d0b3c07752a"),
+    "npr": ("chuangchuangtan/NPR-DeepfakeDetection", NPR_REVISION),
+    "spai": ("mever-team/spai", SPAI_REVISION),
 }
 
 
@@ -39,6 +45,10 @@ def fetch(item):
                 and file.endswith(".py")
             )
 
+        elif name == "spai":
+            keep = file in ("LICENSE", "configs/spai.yaml") or (
+                file.startswith("spai/") and file.endswith(".py")
+            )
         else:
             keep = (
                 (name == "npr" and file == "NPR.pth")
@@ -68,5 +78,12 @@ def fetch(item):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--only", choices=REPOS, help="Fetch one source (SPAI is opt-in)")
+    args = parser.parse_args()
+    sources = (
+        [(args.only, REPOS[args.only])] if args.only
+        else [(name, spec) for name, spec in REPOS.items() if name != "spai"]
+    )
     with ThreadPoolExecutor(max_workers=4) as pool:
-        list(pool.map(fetch, REPOS.items()))
+        list(pool.map(fetch, sources))

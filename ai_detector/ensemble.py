@@ -16,7 +16,10 @@ from sklearn.metrics import (
     roc_auc_score,
     average_precision_score,
 )
-from .config import MODELS, EXTENDED_MODELS, ROOT
+from .config import (
+    DETECTORS, MODELS, EXTENDED_MODELS, ENSEMBLE_MODELS, ROOT,
+    add_model_selection, parse_model_selection, selected_models,
+)
 from .manifests import manifest_digest
 from .reporting import font, text, save_png, NAMES
 from PIL import Image, ImageDraw
@@ -100,24 +103,38 @@ def predict_meta(model, mean, scale, scores):
         return model(x).sigmoid().numpy()
 
 
-def votes(scores):
-    scores = np.asarray(scores)
-    if scores.ndim != 2 or scores.shape[1] not in (7, 8):
-        raise ValueError("Voting requires seven or eight detector scores")
+def vote_families(models):
+    families = {}
+    for column, name in enumerate(models):
+        families.setdefault(DETECTORS[name].family, []).append(column)
+    return families
 
-    count = scores.shape[1]
-    hard = (scores > 0.5).astype(np.int32)
 
-    # Keep the three correlated AIDE variants as one family vote.
-    aide_vote = (hard[:, 4:7].sum(axis=1) >= 2).astype(np.int32)
-    family_hard = np.column_stack(
-        [hard[:, :4], aide_vote, hard[:, 7:]]
+def vote_method_names(models):
+    return (
+        f"majority_vote_{len(models)}",
+        f"family_vote_{len(vote_families(models))}",
+        f"mean_score_{len(models)}",
     )
 
+
+def votes(scores, models=None):
+    scores = np.asarray(scores)
+    if models is None and scores.ndim == 2:
+        # Compatibility for existing callers with the original feature layouts.
+        models = {len(MODELS): MODELS, len(EXTENDED_MODELS): EXTENDED_MODELS}.get(scores.shape[1])
+    if models is None or scores.ndim != 2 or scores.shape[1] != len(models):
+        raise ValueError("Provide one detector name per score column")
+    models = selected_models(models)
+    hard = scores > 0.5
+    family_hard = np.column_stack([
+        hard[:, columns].mean(axis=1) > 0.5 for columns in vote_families(models).values()
+    ])
+    majority, family, mean = vote_method_names(models)
     return {
-        f"majority_vote_{count}": hard.mean(axis=1),
-        f"family_vote_{family_hard.shape[1]}": family_hard.mean(axis=1),
-        f"mean_score_{count}": scores.mean(axis=1),
+        majority: hard.mean(axis=1),
+        family: family_hard.mean(axis=1),
+        mean: scores.mean(axis=1),
     }
 
 
@@ -170,12 +187,6 @@ def load_features(manifest, prediction_dir, models=MODELS):
 def render_summary(results, path, train_count, test_count):
     names = {
         **NAMES,
-        "majority_vote_7": "Majority vote (7)",
-        "family_vote_5": "Family vote (5)",
-        "mean_score_7": "Mean score (7)",
-        "majority_vote_8": "Majority vote (8)",
-        "family_vote_6": "Family vote (6)",
-        "mean_score_8": "Mean score (8)",
         "meta_mlp": "Meta-classifier MLP",
         "logistic_l2": "Logistic regression (L2)",
         "svm_linear": "SVM (linear)",
@@ -183,6 +194,10 @@ def render_summary(results, path, train_count, test_count):
         "random_forest": "Random Forest",
         "xgboost": "XGBoost",
     }
+    for name in results:
+        prefix, _, count = name.rpartition("_")
+        if prefix in ("majority_vote", "family_vote", "mean_score"):
+            names[name] = f"{prefix.replace('_', ' ').capitalize()} ({count})"
     width = 1600
     im = Image.new("RGB", (width, 265 + 55 * len(results)), "#f3f6fa")
     d = ImageDraw.Draw(im)
@@ -254,25 +269,24 @@ def render_summary(results, path, train_count, test_count):
     save_png(im, path)
 
 
-def run(manifest, prediction_dir, output, mode="all", model=None, include_npr=False):
+def run(manifest, prediction_dir, output, mode="all", model=None, include_npr=False, *, models=None):
     if mode not in ("all", "voting", "ensemble", "model"):
         raise ValueError(f"Unknown mode: {mode}")
-    selected_models = EXTENDED_MODELS if include_npr else MODELS
+    selection = selected_models(models, include_npr)
 
-    if mode == "model" and model not in EXTENDED_MODELS:
+    if mode == "model" and model not in ENSEMBLE_MODELS:
         raise ValueError("Single-model evaluation requires a valid model name")
 
-    models = [model] if mode == "model" else selected_models
-    vote_methods = [
-        f"majority_vote_{len(selected_models)}",
-        f"family_vote_{len(selected_models) - 2}",
-        f"mean_score_{len(selected_models)}",
-    ]
+    models = [model] if mode == "model" else selection
+    vote_methods = list(vote_method_names(models))
     train_meta = mode in ("all", "ensemble")
     output.mkdir(parents=True, exist_ok=True)
     config = dict(DEFAULT_CONFIG)
     config["model_order"] = models
     config["input_manifest_sha256"] = manifest_digest(manifest)
+    config["prediction_sha256"] = {
+        name: manifest_digest(prediction_dir / f"{name}.json") for name in models
+    }
     config["comparison_methods"] = vote_methods + ["meta_mlp"]
 
     if mode != "all":
@@ -282,17 +296,9 @@ def run(manifest, prediction_dir, output, mode="all", model=None, include_npr=Fa
             "model": [],
         }[mode]
         config["mode"] = mode
-    if mode != "all":
-        config["comparison_methods"] = {
-            "voting": ["majority_vote_7", "family_vote_5", "mean_score_7"],
-            "ensemble": ["meta_mlp"],
-            "model": [],
-        }[mode]
-        config["mode"] = mode
     protocol = output / "protocol.json"
     if protocol.exists() and json.loads(protocol.read_text()) != config:
         raise ValueError("Protocol differs; use a new experiment output directory")
-    protocol.write_text(json.dumps(config, indent=2) + "\n")
     rows, x = load_features(manifest, prediction_dir, models)
     train = np.array([r["split"] == "train" for r in rows])
     test = np.array([r["split"] == "test" for r in rows])
@@ -304,6 +310,7 @@ def run(manifest, prediction_dir, output, mode="all", model=None, include_npr=Fa
         }:
             raise ValueError(f"Train/test overlap in {key}")
     y = np.array([r["label"] for r in rows])
+    protocol.write_text(json.dumps(config, indent=2) + "\n")
     if train_meta:
         model, mean, scale, history = fit_meta(x[train], y[train], config)
         checkpoint = {
@@ -321,7 +328,7 @@ def run(manifest, prediction_dir, output, mode="all", model=None, include_npr=Fa
     # First held-out scoring happens only after training and checkpoint writing.
     scores = {name: x[test, i] for i, name in enumerate(models)}
     if mode in ("all", "voting"):
-        scores.update(votes(x[test]))
+        scores.update(votes(x[test], models))
     if train_meta:
         scores["meta_mlp"] = predict_meta(model, mean, scale, x[test])
     results = {name: metrics(y[test], p) for name, p in scores.items()}
@@ -390,12 +397,8 @@ def main():
     p.add_argument(
         "--mode", choices=["all", "model", "voting", "ensemble"], default="all"
     )
-    p.add_argument(
-        "--include-npr",
-        action="store_true",
-        help="Include NPR as an eighth detector",
-    )
-    p.add_argument("--model", choices=EXTENDED_MODELS)
+    add_model_selection(p)
+    p.add_argument("--model", choices=ENSEMBLE_MODELS)
     a = p.parse_args()
     run(
         a.manifest,
@@ -403,7 +406,7 @@ def main():
         a.output,
         a.mode,
         a.model,
-        include_npr=a.include_npr,
+        models=parse_model_selection(p, a),
     )
 
 

@@ -69,6 +69,15 @@ def recipe(name, epochs=None):
             smoothing=0.0,
             warmup_fraction=0.0,
         ),
+        "spai": dict(
+            epochs=1,
+            microbatch=1,
+            effective_batch=16,
+            lr=1e-4,
+            weight_decay=0.05,
+            smoothing=0.0,
+            warmup_fraction=0.0,
+        ),
     }[family]
     values = dict(values, family=family)
     if epochs is not None:
@@ -94,6 +103,9 @@ def trainable_model(model, name):
     # upstream's no_grad block and therefore also cannot receive gradients.
     elif name.startswith("aide_"):
         model.convnext_proj.requires_grad_(False)
+    elif name == "spai":
+        model.requires_grad_(False)
+        model.detector.cls_head.requires_grad_(True)
     return model
 
 
@@ -103,6 +115,9 @@ def training_mode(model, name):
         model[0].eval()
     elif name.startswith("aide_"):
         model.openclip_convnext_xxl.eval()
+    elif name == "spai":
+        model.eval()
+        model.detector.cls_head.train()
 
 
 def train_transform(name):
@@ -172,6 +187,9 @@ def train_transform(name):
             tensor = data.transform_before(image)
             patches = dct(tensor)
             return torch.stack([data.transform_train(p) for p in (*patches, tensor)])
+
+        return transform
+
     if name == "npr":
         return T.Compose([
             T.Resize((256, 256)),
@@ -184,7 +202,11 @@ def train_transform(name):
             ),
         ])
 
-        return transform
+    if name == "spai":
+        from .spai_adapter import preprocess
+
+        return T.Compose([T.RandomHorizontalFlip(), preprocess])
+
     raise ValueError(name)
 
 
@@ -222,7 +244,7 @@ def loss_for(model, x, y, name, config):
         )
         return 0.5 * cls + 0.5 * contrast
     logits = model(x)
-    if name in ("community_forensics", "universalfakedetect", "npr"):
+    if name in ("community_forensics", "universalfakedetect", "npr", "spai"):
         return torch.nn.functional.binary_cross_entropy_with_logits(
             logits.flatten().float(), y.float()
         )

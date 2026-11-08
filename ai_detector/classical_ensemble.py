@@ -14,7 +14,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.svm import LinearSVC, SVC
 from sklearn.ensemble import RandomForestClassifier
 from threadpoolctl import threadpool_limits
-from .config import ROOT, MODELS, EXTENDED_MODELS, configure_environment
+from .config import ROOT, configure_environment, add_model_selection, parse_model_selection, selected_models
 from .manifests import manifest_digest
 from .ensemble import (load_features, transform_scores, metrics, votes, fit_meta,
                        predict_meta, DEFAULT_CONFIG, render_summary)
@@ -39,8 +39,8 @@ def classifiers(y):
     }
 
 
-def run(manifest, predictions, output, include_npr=False):
-    model_names = EXTENDED_MODELS if include_npr else MODELS
+def run(manifest, predictions, output, include_npr=False, *, models=None):
+    model_names = selected_models(models, include_npr)
     rows, x = load_features(manifest, predictions, models=model_names)
     train = np.array([r['split'] == 'train' for r in rows])
     test = np.array([r['split'] == 'test' for r in rows])
@@ -87,7 +87,7 @@ def run(manifest, predictions, output, include_npr=False):
     status.write_text(json.dumps({'status': 'running'}))
     z = transform_scores(x)
     scores = {name: x[test, i] for i, name in enumerate(model_names)}
-    scores.update(votes(x[test]))
+    scores.update(votes(x[test], model_names))
     results = {}
     for name, model in models.items():
         print('Training', name, flush=True)
@@ -130,11 +130,12 @@ def main():
     p.add_argument('--manifest', type=Path, default=ROOT / 'data/wildfc/ensemble_split/all.jsonl')
     p.add_argument('--predictions', type=Path, default=ROOT / '.cache/predictions/pretrained')
     p.add_argument('--output', type=Path, default=ROOT / 'reports/pretrained_meta')
-    p.add_argument('--include-npr', action='store_true', help='Include NPR as an eighth detector')
+    add_model_selection(p)
     args = p.parse_args()
+    models = parse_model_selection(p, args)
     configure_environment(offline=True)
     with threadpool_limits(limits=2):
-        run(args.manifest, args.predictions, args.output, include_npr=args.include_npr,)
+        run(args.manifest, args.predictions, args.output, models=models)
 
 
 if __name__ == '__main__':

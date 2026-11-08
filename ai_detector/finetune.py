@@ -13,7 +13,11 @@ import subprocess
 import sys
 import time
 
-from .config import ROOT, CACHE, UP, MODELS, EXTENDED_MODELS, configure_environment
+from .config import (
+    ROOT, CACHE, UP, TRAINABLE_MODELS, configure_environment, add_model_selection,
+    parse_model_selection,
+)
+from .artifacts import base_signature
 from .manifests import manifest_digest
 
 DEFAULT_OUTPUT = ROOT / "reports/finetuned_meta"
@@ -151,47 +155,6 @@ def prepare_split(original, output):
     return summary
 
 
-def base_signature(name):
-    from .config import COMMUNITY_REPO, COMMUNITY_REVISION
-
-    if name == "npr":
-        path = UP / "npr" / "NPR.pth"
-        with path.open("rb") as stream:
-            digest = hashlib.file_digest(stream, "sha256").hexdigest()
-        return {"npr/NPR.pth": digest}
-
-    if name == "community_forensics":
-        from huggingface_hub import hf_hub_download
-
-        paths = [
-            Path(
-                hf_hub_download(
-                    COMMUNITY_REPO,
-                    "model.safetensors",
-                    revision=COMMUNITY_REVISION,
-                    cache_dir=str(CACHE / "huggingface"),
-                    local_files_only=True,
-                )
-            )
-        ]
-    else:
-        paths = {
-            "safe": [CACHE / "detectors/safe/checkpoint-best.pth"],
-            "universalfakedetect": [
-                CACHE / "clip/ViT-L-14.pt",
-                CACHE / "detectors/universalfakedetect/fc_weights.pth",
-            ],
-            "dda": [CACHE / "detectors/dda/DDA_ckpt.pth"],
-        }.get(name, [CACHE / f'detectors/aide/{name.removeprefix("aide_")}_train.pth'])
-    result = {}
-    for path in paths:
-        with path.open("rb") as stream:
-            result[str(path.relative_to(CACHE))] = hashlib.file_digest(
-                stream, "sha256"
-            ).hexdigest()
-    return result
-
-
 def updated_state(model):
     # Save trainable parameters and every buffer (including BatchNorm statistics).
     keys = {n for n, p in model.named_parameters() if p.requires_grad} | {
@@ -324,6 +287,13 @@ class Images:
         ), torch.tensor([0, 0, 0, 1, 1, 1])
 
 
+def collate_variable_images(samples):
+    import torch
+
+    images, labels = zip(*samples)
+    return list(images), torch.tensor(labels)
+
+
 def train(args):
     import numpy as np
     import torch
@@ -342,10 +312,11 @@ def train(args):
     output.mkdir(parents=True, exist_ok=True)
     config = recipe(args.model, args.epochs)
     use_cuda = args.device.startswith("cuda")
+    use_amp = use_cuda and args.model != "spai"
     amp_dtype = (
-        torch.bfloat16 if use_cuda and torch.cuda.is_bf16_supported() else torch.float16
+        torch.bfloat16 if use_amp and torch.cuda.is_bf16_supported() else torch.float16
     )
-    config["precision"] = str(amp_dtype) if use_cuda else "torch.float32"
+    config["precision"] = str(amp_dtype) if use_amp else "torch.float32"
     if args.microbatch:
         config["microbatch"] = args.microbatch
     config.update(
@@ -359,11 +330,16 @@ def train(args):
         adapter_sha256={
             p: manifest_digest(Path(__file__).parent / p)
             for p in ("finetune.py", "training_recipes.py", "detectors.py")
+            + (("spai_adapter.py",) if args.model == "spai" else ())
         },
         smoke_steps=args.smoke_steps,
         checkpoint_selection="fixed final epoch; no validation or test monitoring",
         sampling="inverse class frequency; DDA real/fake pairs",
     )
+    if args.model == "spai":
+        from .config import SPAI_CONFIG
+
+        config["spai_config_sha256"] = manifest_digest(SPAI_CONFIG)
     protocol = output / "protocol.json"
     if protocol.exists() and json.loads(protocol.read_text()) != config:
         raise ValueError("Training protocol changed; choose a new output directory")
@@ -398,7 +374,7 @@ def train(args):
         weight_decay=config["weight_decay"],
     )
     scaler = torch.amp.GradScaler(
-        "cuda", enabled=use_cuda and amp_dtype == torch.float16, init_scale=128.0
+        "cuda", enabled=use_amp and amp_dtype == torch.float16, init_scale=128.0
     )
     smoke_before = updated_state(model) if args.smoke_steps else None
     resume = output / "last.pt"
@@ -475,7 +451,8 @@ def train(args):
                 generator=generator,
             )
             loader = DataLoader(
-                dataset, batch_size=micro, sampler=sampler, num_workers=0
+                dataset, batch_size=micro, sampler=sampler, num_workers=0,
+                collate_fn=collate_variable_images if args.model == "spai" else None,
             )
         optimizer.zero_grad(set_to_none=True)
         epoch_loss = resumed_loss if epoch == start_epoch and start_batch else 0.0
@@ -512,12 +489,12 @@ def train(args):
                 for group in optimizer.param_groups:
                     group["lr"] = lr
             seed_all(42 + epoch * 1000000 + batch)
-            x = x.to(args.device)
+            x = [image.to(args.device) for image in x] if args.model == "spai" else x.to(args.device)
             y = y.to(args.device)
             with torch.autocast(
                 device_type="cuda",
                 dtype=amp_dtype,
-                enabled=use_cuda,
+                enabled=use_amp,
             ):
                 loss = loss_for(model, x, y, args.model, config)
             if not torch.isfinite(loss):
@@ -688,12 +665,8 @@ def main():
     p.add_argument(
         "--phase", choices=["run", "prepare", "train", "predict"], default="run"
     )
-    p.add_argument("--model", choices=[*MODELS, "npr"])
-    p.add_argument(
-    "--include-npr",
-    action="store_true",
-    help="Include NPR in full fine-tuning and stacking runs",
-    )
+    p.add_argument("--model", choices=TRAINABLE_MODELS)
+    add_model_selection(p, training=True)
     p.add_argument(
         "--epochs",
         type=int,
@@ -709,6 +682,9 @@ def main():
         help="Worker-only optimizer-step test; never publishes a final checkpoint",
     )
     args = p.parse_args()
+    if args.model and args.models:
+        p.error("--model and --models cannot be used together")
+    selected = [args.model] if args.model else parse_model_selection(p, args, training=True)
     if (
         args.gpu_index < 0
         or (args.epochs is not None and args.epochs < 1)
@@ -757,7 +733,6 @@ def main():
 
     with (args.output / "run.lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        selected = ([args.model] if args.model else (EXTENDED_MODELS if args.include_npr else MODELS))
         status = {
             "status": "running",
             "models": selected,
@@ -818,7 +793,10 @@ def main():
                         str(args.output / "base_predictions"),
                         "--output",
                         str(args.output),
-                    ] + (["--include-npr"] if args.include_npr else []),
+                    ] + (
+                        ["--models", *selected] if args.models
+                        else (["--include-npr"] if args.include_npr else [])
+                    ),
                     cwd=ROOT,
                     check=True,
                 )

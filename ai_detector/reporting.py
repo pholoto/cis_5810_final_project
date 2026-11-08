@@ -6,18 +6,10 @@ import io
 import json
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont, ImageOps
+from .config import DETECTORS
 
 ROOT = Path(__file__).resolve().parents[1]
-NAMES = {
-    "community_forensics": "Community Forensics",
-    "safe": "SAFE",
-    "universalfakedetect": "UniversalFakeDetect",
-    "dda": "DDA",
-    "aide_GenImage": "AIDE GenImage",
-    "aide_progan": "AIDE ProGAN",
-    "aide_sd14": "AIDE SD1.4",
-    "npr": "NPR",
-}
+NAMES = {name: spec.label for name, spec in DETECTORS.items()}
 INK = "#172b43"
 MUTED = "#52667a"
 HEADER = "#183b5b"

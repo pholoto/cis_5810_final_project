@@ -4,12 +4,13 @@ import contextlib
 import io
 import json
 import os
+import sys
 from pathlib import Path
 import tarfile
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from ai_detector import runner
 from ai_detector.config import CACHE, MODELS
@@ -23,6 +24,11 @@ class WorkflowTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(dir=CACHE / "tmp")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+
+    def mock_linux_lock(self):
+        # These orchestration tests replace subprocesses and do not test locking.
+        if os.name == "nt":
+            self.enterContext(patch.dict(sys.modules, {"fcntl": Mock()}))
 
     def manifest(self):
         rows = []
@@ -49,9 +55,11 @@ class WorkflowTests(unittest.TestCase):
         out.mkdir()
         first = {**rows[0], "score": 0.2, "prediction": 0, "seconds": 0}
         (out / "safe.progress.jsonl").write_text(json.dumps(first) + '\n{"partial":')
-        (out / "safe.progress.meta.json").write_text(
-            json.dumps({"input_manifest_sha256": manifest_digest(manifest)})
-        )
+        signature = {"weights": {"safe": "v1"}}
+        (out / "safe.progress.meta.json").write_text(json.dumps({
+            "input_manifest_sha256": manifest_digest(manifest),
+            "inference_signature": signature,
+        }))
         calls = []
         with patch.object(
             runner,
@@ -60,16 +68,40 @@ class WorkflowTests(unittest.TestCase):
         ), contextlib.redirect_stdout(io.StringIO()):
             runner.worker(
                 SimpleNamespace(
-                    manifest=manifest, output=out, model="safe", device="cpu"
+                    manifest=manifest, output=out, model="safe", device="cpu",
+                    inference_signature=signature,
                 )
             )
         self.assertEqual(len(calls), 1)
         self.assertTrue(runner.matching_result(out / "safe.json", manifest))
+        self.assertTrue(runner.matching_result(out / "safe.json", manifest, signature=signature))
+        self.assertFalse(runner.matching_result(
+            out / "safe.json", manifest, signature={"weights": {"safe": "v2"}},
+        ))
+        previous = (out / "safe.json").read_bytes()
+        (out / "safe.progress.jsonl").write_text(json.dumps(first) + "\n")
+        (out / "safe.progress.meta.json").write_text(json.dumps({
+            "input_manifest_sha256": manifest_digest(manifest),
+            "inference_signature": signature,
+        }))
+        calls.clear()
+        with patch.object(
+            runner, "make_detector",
+            return_value=(lambda path: calls.append(path) or 0.7, {}),
+        ), contextlib.redirect_stdout(io.StringIO()):
+            runner.worker(SimpleNamespace(
+                manifest=manifest, output=out, model="safe", device="cpu",
+                inference_signature={"weights": {"safe": "v2"}},
+            ))
+        self.assertEqual(len(calls), 2)
+        archived, = (out / "previous_predictions" / "safe").glob("*.json")
+        self.assertEqual(archived.read_bytes(), previous)
         rows.reverse()
         manifest.write_text("".join(json.dumps(r) + "\n" for r in rows))
         self.assertFalse(runner.matching_result(out / "safe.json", manifest))
 
     def test_gpu_index_forwarded_to_every_sequential_worker(self):
+        self.mock_linux_lock()
         manifest, _ = self.manifest()
         out = self.root / "output"
         args = [
@@ -100,6 +132,7 @@ class WorkflowTests(unittest.TestCase):
     def test_failure_records_actionable_status(self):
         import subprocess
 
+        self.mock_linux_lock()
         manifest, _ = self.manifest()
         out = self.root / "failed"
         args = [
@@ -137,10 +170,12 @@ class WorkflowTests(unittest.TestCase):
             inference = execute.call_args_list[1].args[0]
             self.assertEqual(inference[inference.index('--gpu-index') + 1], '0')
             evaluation = execute.call_args_list[-1].args[0]
-            self.assertTrue(evaluation[evaluation.index('--output') + 1].endswith('/reports/' + folder))
+            self.assertEqual(Path(evaluation[evaluation.index('--output') + 1]).parts[-2:],
+                             ('reports', folder))
             if mode != 'finetuned':
                 self.assertEqual(inference[inference.index('--device') + 1], 'cuda:0')
-                self.assertTrue(inference[inference.index('--output') + 1].endswith('/.cache/predictions/pretrained'))
+                self.assertEqual(Path(inference[inference.index('--output') + 1]).parts[-3:],
+                                 ('.cache', 'predictions', 'pretrained'))
             if mode == 'pretrained':
                 self.assertIn('ai_detector.classical_ensemble', evaluation)
             elif mode == 'voting':

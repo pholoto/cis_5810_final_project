@@ -1,0 +1,7 @@
+# Optional dependencies for the pinned SPAI MFM adapter.
+einops>=0.8,<1
+matplotlib>=3.9,<4
+pandas>=2.2,<4
+PyYAML>=6,<7
+seaborn>=0.13,<1
+yacs==0.1.8

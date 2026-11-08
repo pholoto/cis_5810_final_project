@@ -1,7 +1,8 @@
 # AI image detector
 
-Compare seven AI-image detectors on WildFC using pretrained voting, pretrained
-stacking, or fine-tuning followed by stacking. Outputs are PNG tables and CSV/JSON
+Compare AI-image detectors on WildFC using pretrained voting, pretrained
+stacking, or fine-tuning followed by stacking. The original seven detectors are
+the default. NPR and SPAI are opt-in. Outputs are PNG tables and CSV/JSON
 files. No experiment results or model weights are included in this repository.
 
 Use Linux, an NVIDIA GPU, and **Python 3.12 or 3.13**. Run all commands from the
@@ -34,6 +35,27 @@ Pinned upstream source code and approximately 13.1 GB of pretrained weights are
 stored in `.cache/`. Rerun the download command to resume an interrupted download.
 The detectors are Community Forensics, SAFE, UniversalFakeDetect, DDA, and AIDE
 with its GenImage, ProGAN, and SD14 checkpoints.
+
+To add NPR, run `python scripts/fetch_detector_sources.py --only npr`. This
+fetches both source and the released checkpoint. Check it with
+`python -m ai_detector.check_setup --include-npr`.
+
+To add SPAI, use the same project environment and run:
+
+```sh
+python -m pip install -r requirements-spai.txt --cache-dir .cache/pip
+python scripts/fetch_detector_sources.py --only spai
+python -m ai_detector.check_setup --include-spai
+```
+
+Before the setup check, place the [official SPAI checkpoint](https://github.com/mever-team/spai#weights-checkpoint)
+at `.cache/detectors/spai/spai.pth`. The adapter pins
+[SPAI source and config](https://github.com/mever-team/spai/tree/8ff7b3b6779b4fcb43cf313471d9cb1c62d129a4),
+strictly loads the tensor state, and records the checkpoint SHA-256 in run
+provenance. It uses the released MFM model with this project's existing
+PyTorch, torchvision, and timm. Inference keeps the original image dimensions
+except for reflection padding below 224 pixels on either side, and uses the
+upstream patch aggregation and sigmoid score.
 
 ## 3. Download WildFC
 
@@ -78,10 +100,24 @@ python scripts/run_wildfc.py --mode pretrained --gpu-index 0
 python scripts/run_wildfc.py --mode finetuned --gpu-index 0
 ```
 
+Use `--include-npr` to append NPR to the seven defaults. Use `--models`
+to supply an explicit ordered list for any of the three workflows:
+
+```sh
+python scripts/run_wildfc.py --mode pretrained --gpu-index 0 --models community_forensics safe universalfakedetect dda aide_GenImage aide_progan aide_sd14 npr spai
+```
+
+The same selection works with `python -m ai_detector`,
+`python -m ai_detector.ensemble`, `python -m ai_detector.classical_ensemble`,
+and `python -m ai_detector.finetune`. For a single SPAI inference worker, use
+`python -m ai_detector --model spai --manifest MANIFEST --output NEW_DIR --device cpu`
+on a supported Linux environment. Family voting treats the selected AIDE
+variants as one family and gives NPR and SPAI one family each.
+
 Both stacking workflows compare **L2 logistic regression, linear SVM, RBF SVM,
-Random Forest, XGBoost, and an MLP (7 → 16 → 8 → 1)**. Their tables also include
+Random Forest, XGBoost, and an MLP (number of selected detectors → 16 → 8 → 1)**. Their tables also include
 individual detector and voting baselines. The input features are the seven final
-detector scores converted to clipped log-odds, not backbone embeddings. Scaling
+detector scores by default. The stackers convert scores to clipped log-odds. Scaling
 for logistic regression, SVMs, and the MLP is fitted on meta-training data only.
 SVM scores are sigmoid-transformed decision margins, not calibrated probabilities.
 
@@ -111,6 +147,13 @@ optimizer-boundary save. Meta-learners are refitted when rerun. Keep the origina
 pretrained weights: fine-tuned checkpoints store parameter updates and model
 buffers that are loaded on top of them.
 
+An explicit `--models` roster gets its own cache and report folder. Pretrained
+reuse now verifies weights, device, adapter code, and pinned source/config
+identity as well as manifest alignment. The first run against an older cache
+will regenerate scores and archive the previous completed files. Use
+`--output NEW_DIR` for a fresh workflow report
+when an existing report or training protocol differs.
+
 ### Fine-tuning details
 
 | Detector | Updated parameters | Epochs |
@@ -120,6 +163,15 @@ buffers that are loaded on top of them.
 | UniversalFakeDetect | Linear head; CLIP frozen | 20 |
 | DDA | LoRA and classifier | 1 |
 | AIDE (each variant) | ResNet branches and classifier; ConvNeXt/HPF frozen | 20 |
+| NPR (opt-in) | Detector parameters | 1 |
+| SPAI (opt-in) | Classifier head, with spectral backbone and patch aggregation frozen | 1 |
+
+SPAI fine-tuning is a project adaptation of the released checkpoint. It uses
+variable-size image batches, horizontal flips, BCE, and float32 training.
+For a bounded server check, first prepare the detector split with
+`python -m ai_detector.finetune --phase prepare --output NEW_DIR`, then run
+`python -m ai_detector.finetune --phase train --model spai --manifest NEW_DIR/splits/detector_train.jsonl --output NEW_DIR --smoke-steps 1`.
+Use a separate output directory for the subsequent full run.
 
 Training uses pinned upstream augmentations with model-specific AdamW recipes,
 class balancing, mixed precision, and gradient accumulation. The final epoch is

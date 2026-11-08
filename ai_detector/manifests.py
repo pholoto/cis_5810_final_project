@@ -5,10 +5,11 @@ import json
 
 
 def manifest_digest(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def matching_result(path, manifest):
+def matching_result(path, manifest, *, signature=None):
     """Only reuse results produced from the exact immutable input snapshot."""
     if not path.exists():
         return False
@@ -17,6 +18,7 @@ def matching_result(path, manifest):
         records = [json.loads(line) for line in manifest.read_text().splitlines()]
         return (
             data.get("input_manifest_sha256") == manifest_digest(manifest)
+            and (signature is None or data.get("inference_signature") == signature)
             and len(data["results"]) == len(records)
             and all(
                 (a["path"], a.get("label"), a.get("sha256"))

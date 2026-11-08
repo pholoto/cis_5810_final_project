@@ -1,17 +1,25 @@
 """Check installed dependencies, pinned sources, and downloaded checkpoints offline."""
 
+import argparse
 import importlib
 import sys
-from .config import CACHE, UP, COMMUNITY_REPO, COMMUNITY_REVISION, configure_environment
+from .config import (
+    CACHE, UP, COMMUNITY_REPO, COMMUNITY_REVISION, NPR_REVISION, SPAI_CHECKPOINT, SPAI_CONFIG,
+    SPAI_REVISION, configure_environment,
+)
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--include-npr", action="store_true", help="Also check NPR artifacts")
+    parser.add_argument("--include-spai", action="store_true", help="Also check SPAI dependencies and artifacts")
+    args = parser.parse_args()
     configure_environment(offline=True)
     failures = []
     print(f"Python: {sys.version.split()[0]} (3.12 or 3.13 supported)")
     if not (3, 12) <= sys.version_info[:2] <= (3, 13):
         failures.append("Python 3.12 or 3.13")
-    for name in (
+    dependencies = (
         "pkg_resources",
         "cv2",
         "skimage",
@@ -31,7 +39,10 @@ def main():
         "open_clip",
         "requests",
         "bs4",
-    ):
+    )
+    if args.include_spai:
+        dependencies += ("einops", "matplotlib", "pandas", "yaml", "seaborn", "yacs")
+    for name in dependencies:
         try:
             importlib.import_module(name)
             print(f"OK dependency: {name}")
@@ -53,6 +64,18 @@ def main():
     required.extend(
         CACHE / f"detectors/aide/{n}_train.pth" for n in ("GenImage", "progan", "sd14")
     )
+    if args.include_npr:
+        required.extend((UP / "npr/networks/resnet.py", UP / "npr/NPR.pth"))
+    if args.include_spai:
+        required.extend((SPAI_CHECKPOINT, SPAI_CONFIG, UP / "spai/spai/models/sid.py"))
+    for enabled, source, expected in (
+        (args.include_npr, "npr", NPR_REVISION), (args.include_spai, "spai", SPAI_REVISION),
+    ):
+        if enabled:
+            revision = UP / source / "REVISION"
+            if not revision.is_file() or revision.read_text().strip() != expected:
+                failures.append(f"Pinned {source} revision")
+                print(f"MISSING/WRONG {source} revision: expected {expected}")
     for path in required:
         if path.is_file() and path.stat().st_size:
             print(f"OK file: {path.relative_to(CACHE)}")

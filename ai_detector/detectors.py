@@ -33,12 +33,18 @@ def build_detector(name, device="cpu"):
 
     torch.set_num_threads(2)
     torch.manual_seed(42)
+    if name == "spai":
+        from .spai_adapter import build_spai
+
+        return build_spai(device)
+
     clip_norm = T.Normalize(
         [0.48145466, 0.4578275, 0.40821073], [0.26862954, 0.26130258, 0.27577711]
     )
     weights = CACHE / "detectors"
 
     if name in ("npr", "npr_no_crop"):
+        crop = name == "npr"
         npr_directory = UP / "npr"
         sys.path.insert(0, str(npr_directory))
 
@@ -62,7 +68,7 @@ def build_detector(name, device="cpu"):
 
         transform = T.Compose([
             T.Resize((256, 256)),
-            *([] if(name == "npr_no_crop") else [T.CenterCrop(224)]),
+            *([T.CenterCrop(224)] if crop else []),
             T.ToTensor(),
             T.Normalize(
                 [0.485, 0.456, 0.406],
@@ -74,7 +80,10 @@ def build_detector(name, device="cpu"):
             model,
             transform,
             {
-                "transform": "resize 256x256, center crop 224, ImageNet normalization",
+                "transform": (
+                    "resize 256x256, center crop 224, ImageNet normalization"
+                    if crop else "resize 256x256, no crop, ImageNet normalization"
+                ),
                 "score": "sigmoid(fake logit)",
                 "binary": True,
                 "device": device,
