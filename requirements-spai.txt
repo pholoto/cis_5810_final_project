@@ -5,3 +5,4 @@ pandas>=2.2,<4
 PyYAML>=6,<7
 seaborn>=0.13,<1
 yacs==0.1.8
+opencv-python-headless>=4.10,<5

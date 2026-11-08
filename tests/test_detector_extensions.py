@@ -125,3 +125,107 @@ class DetectorExtensionTests(unittest.TestCase):
             self.assertEqual(command[command.index("--models") + 1:], ["spai", "npr", "safe"])
         output = Path(execute.call_args.args[0][execute.call_args.args[0].index("--output") + 1])
         self.assertTrue(output.name.startswith("pretrained_voting_models_"))
+
+    def test_spai_predict_rejects_changed_configuration(self):
+        from ai_detector.finetune import predict
+
+        saved = {
+            "model": "spai",
+            "config": {
+                "base_signature": {},
+                "spai_config_sha256": "intentionally-wrong",
+            },
+        }
+        args = SimpleNamespace(
+            model="spai",
+            output=Path("unused"),
+            manifest=Path("unused"),
+            device="cpu",
+        )
+        with patch("torch.load", return_value=saved), patch(
+            "ai_detector.finetune.base_signature", return_value={}
+        ):
+            with self.assertRaisesRegex(ValueError, "SPAI configuration changed"):
+                predict(args)
+
+    def test_spai_changed_inference_signature_invalidates_cache(self):
+        import json
+        import tempfile
+        from ai_detector.config import SPAI_CONFIG
+        from ai_detector.finetune import predict
+        from ai_detector.manifests import manifest_digest
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkpoint = root / "checkpoints/spai/finetuned.pt"
+            checkpoint.parent.mkdir(parents=True)
+            checkpoint.write_bytes(b"test checkpoint")
+            manifest = root / "manifest.jsonl"
+            manifest.write_text("")
+            cache = root / "base_predictions/spai.json"
+            cache.parent.mkdir()
+            cache.write_text(json.dumps({
+                "checkpoint_sha256": manifest_digest(checkpoint),
+                "input_manifest_sha256": manifest_digest(manifest),
+                "inference_signature": {"revision": "old"},
+                "results": [],
+            }))
+            saved = {
+                "model": "spai",
+                "config": {
+                    "base_signature": {},
+                    "spai_config_sha256": manifest_digest(SPAI_CONFIG),
+                },
+            }
+            args = SimpleNamespace(model="spai", output=root, manifest=manifest, device="cpu")
+            with patch("torch.load", return_value=saved), patch(
+                "ai_detector.finetune.base_signature", return_value={}
+            ), patch(
+                "ai_detector.artifacts.inference_signature", return_value={"revision": "new"}
+            ), patch("ai_detector.detectors.build_detector", side_effect=RuntimeError("cache invalidated")):
+                with self.assertRaisesRegex(RuntimeError, "cache invalidated"):
+                    predict(args)
+
+    def test_spai_changed_signature_discards_partial_cache(self):
+        import json
+        import tempfile
+        from ai_detector.config import SPAI_CONFIG
+        from ai_detector.finetune import predict
+        from ai_detector.manifests import manifest_digest
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkpoint = root / "checkpoints/spai/finetuned.pt"
+            checkpoint.parent.mkdir(parents=True)
+            checkpoint.write_bytes(b"test checkpoint")
+            manifest = root / "manifest.jsonl"
+            manifest.write_text("")
+            output = root / "base_predictions"
+            output.mkdir()
+            progress = output / "spai.progress.jsonl"
+            progress_meta = output / "spai.progress.meta.json"
+            progress.write_text(json.dumps({"path": "stale-image"}) + "\n")
+            progress_meta.write_text(json.dumps({
+                "checkpoint_sha256": manifest_digest(checkpoint),
+                "input_manifest_sha256": manifest_digest(manifest),
+                "inference_signature": {"revision": "old"},
+            }))
+            saved = {
+                "model": "spai",
+                "config": {
+                    "base_signature": {},
+                    "spai_config_sha256": manifest_digest(SPAI_CONFIG),
+                },
+            }
+            args = SimpleNamespace(model="spai", output=root, manifest=manifest, device="cpu")
+            with patch("torch.load", return_value=saved), patch(
+                "ai_detector.finetune.base_signature", return_value={}
+            ), patch(
+                "ai_detector.artifacts.inference_signature", return_value={"revision": "new"}
+            ), patch(
+                "ai_detector.detectors.build_detector", side_effect=RuntimeError("fresh inference")
+            ):
+                with self.assertRaisesRegex(RuntimeError, "fresh inference"):
+                    predict(args)
+            self.assertEqual(progress.read_text(), "")
+            self.assertEqual(json.loads(progress_meta.read_text())["inference_signature"], {"revision": "new"})

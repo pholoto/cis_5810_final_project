@@ -579,6 +579,7 @@ def predict(args):
     import torch
     from PIL import Image, ImageOps
     from .detectors import build_detector
+    from .artifacts import inference_signature
 
     checkpoint = args.output / "checkpoints" / args.model / "finetuned.pt"
     saved = torch.load(checkpoint, map_location="cpu", weights_only=True)
@@ -586,12 +587,18 @@ def predict(args):
         raise ValueError("Original weights changed")
     if saved["model"] != args.model:
         raise ValueError("Wrong checkpoint model")
+    if args.model == "spai":
+        from .config import SPAI_CONFIG
+        if saved["config"].get("spai_config_sha256") != manifest_digest(SPAI_CONFIG):
+            raise ValueError("SPAI configuration changed since fine-tuning")
     digest = manifest_digest(checkpoint)
     fingerprint = manifest_digest(args.manifest)
     output = args.output / "base_predictions"
     output.mkdir(exist_ok=True)
     path = output / f"{args.model}.json"
     meta = {"checkpoint_sha256": digest, "input_manifest_sha256": fingerprint}
+    if args.model == "spai":
+        meta["inference_signature"] = inference_signature(args.model, args.device)
     rows = read_rows(args.manifest)
     if path.exists():
         d = json.loads(path.read_text())
